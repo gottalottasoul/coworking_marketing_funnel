@@ -1,0 +1,1012 @@
+---
+title: "hana Marketing Conversion and Trends "
+resource_files:
+- inc/funnel_data.RData
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    theme: readable
+    logo: inc/hana_logo_small.png
+    css: inc/corp-styles.css
+    includes:
+      before_body: "inc/google-analytics.js"
+---
+
+```{r setup, include=FALSE}
+library(shiny)
+library(shinyWidgets)
+library(flexdashboard)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(rlang)
+library(DT)
+library(RiHana)
+```
+
+```{r}
+
+load("inc/funnel_data.RData")
+
+#yesterdays_date<-Sys.Date()-1
+#start_date<-lubridate::ceiling_date(yesterdays_date-271, unit="week",week_start = 1)
+
+updatedFunnelViz <- reactive({
+
+    currentToDate<-case_when(
+    input$FunnelTimeComplete== 'N' & input$FunnelTimeDimension=='Week'~as.integer(lubridate::wday(lubridate::today(),week_start = 1)),
+    input$FunnelTimeComplete== 'N' & input$FunnelTimeDimension=='Month'~as.integer(lubridate::mday(lubridate::today())),
+    input$FunnelTimeComplete== 'N' & input$FunnelTimeDimension=='Quarter'~as.integer(lubridate::qday(lubridate::today())),
+    TRUE~as.integer(100)
+    )
+  
+  funnel_viz_data<-funnel_data %>% 
+        mutate(hana_product_eval=case_when(
+          input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+          input$FunnelSourceAttribution=='Blended'~hana_product,
+          TRUE~'WrongAnswer'),
+         report_date=case_when(
+           input$FunnelGroupingDimension=='Cohort'~cohort_date,
+           TRUE~funnel_date),
+         report_week=case_when(
+           input$FunnelGroupingDimension=='Cohort'~cohort_week,
+           TRUE~funnel_week),
+         report_month=case_when(
+           input$FunnelGroupingDimension=='Cohort'~cohort_month,
+           TRUE~funnel_month),
+         report_quarter=case_when(
+           input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+           TRUE~funnel_quarter),
+         report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+         report_mtd=as.integer(lubridate::mday(report_date)),
+         report_qtd=as.integer(lubridate::qday(report_date)),
+        date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+         input$FunnelTimeDimension=='Month'~report_mtd,
+         input$FunnelTimeDimension=='Quarter'~report_qtd
+        )
+      ) %>% 
+    filter(measure!='marketing spend',
+           report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+           !grepl(input$FunnelTours,measure,ignore.case = TRUE),                      
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    mutate(stage=factor(measure,levels =c("web_traffic","leads","opptys","tour_created","tour_scheduled","won"))) %>% 
+    group_by(stage) %>% 
+    summarise(values=sum(value)) %>% 
+  mutate(percent=trunc(log(values)),
+         conversion=scales::percent(values/lag(values)),
+         plot_label=paste0(scales::comma(values),'<br>',conversion)) %>% 
+  ungroup(.)  
+  
+ return(funnel_viz_data)
+  
+  })
+
+
+updatedFunnelTable <- reactive({
+  
+    currentToDate<-case_when(
+    input$FunnelTimeComplete== 'N' & input$FunnelTimeDimension=='Week'~as.integer(lubridate::wday(lubridate::today(),week_start = 1)),
+    input$FunnelTimeComplete== 'N' & input$FunnelTimeDimension=='Month'~as.integer(lubridate::mday(lubridate::today())),
+    input$FunnelTimeComplete== 'N' & input$FunnelTimeDimension=='Quarter'~as.integer(lubridate::qday(lubridate::today())),
+    TRUE~as.integer(100)
+    )
+
+  table_data<-funnel_data %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+                 TRUE~'WrongAnswer'),
+      report_date=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_date,
+        TRUE~funnel_date),
+      report_week=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_week,
+        TRUE~funnel_week),
+      report_month=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_month,
+        TRUE~funnel_month),
+      report_quarter=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+        TRUE~funnel_quarter),
+      report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+      report_mtd=as.integer(lubridate::mday(report_date)),
+      report_qtd=as.integer(lubridate::qday(report_date)),
+      date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+        input$FunnelTimeDimension=='Month'~report_mtd,
+        input$FunnelTimeDimension=='Quarter'~report_qtd)
+      ) %>%
+    filter(report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+#           !grepl(input$FunnelTours,measure,ignore.case = TRUE),           
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city),
+           date_length<=currentToDate) %>%
+    mutate(measure=factor(measure,levels=c("marketing spend","web_traffic","leads","opptys","tour_created","tour_scheduled","won","deal_revenue")),
+           timespan=case_when(
+           input$FunnelTimeDimension=='Week'~report_week,
+           input$FunnelTimeDimension=='Month'~report_month,
+           input$FunnelTimeDimension=='Quarter'~report_quarter)) %>%
+    group_by(measure,timespan) %>% 
+    summarise(values=trunc(sum(value))) %>% 
+        group_by(timespan) %>% 
+    ungroup(.) %>% 
+    complete(measure,timespan,fill=list(values=0)) %>% 
+    pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) %>% 
+    mutate(visit_conversion=leads/web_traffic,
+           lead_to_oppty_conversion=opptys/leads,
+           lead_to_won_conversion=won/leads) %>% 
+    janitor::clean_names()
+
+  # %>% 
+  #   mutate(deal_revenue=scales::dollar(deal_revenue),
+  #          visit_conversion=scales::percent(leads/web_traffic),
+  #          lead_to_oppty_conversion=scales::percent(opptys/leads),
+  #          lead_to_won_conversion=scales::percent(won/leads)) %>% 
+  #   transform(`marketing spend`=scales::dollar(`marketing spend`))
+
+  return(table_data)
+})
+
+updatedVisitConversionKPI<- reactive({
+  
+  kpi_data<-funnel_data %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+      TRUE~'WrongAnswer'
+      )) %>% 
+    filter(funnel_date>=input$FunnelTimeRange[1],
+           funnel_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) 
+  
+  shiny::validate(
+    shiny::need("web_traffic" %in% colnames(kpi_data), 
+         "Tour conversion can't be calculated")
+  )
+
+  return(round((kpi_data$leads/kpi_data$web_traffic)*100,1))
+  
+}
+)
+
+updatedTourConversionKPI<- reactive({
+  
+  kpi_data<-funnel_data %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+      TRUE~'WrongAnswer'
+      )) %>% 
+    filter(funnel_date>=input$FunnelTimeRange[1],
+           funnel_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) 
+  
+  shiny::validate(
+    shiny::need("tour_scheduled" %in% colnames(kpi_data), 
+         "Tour conversion can't be calculated")
+  )
+
+  return(round((kpi_data$tour_scheduled/kpi_data$leads)*100,1))
+  
+}
+)
+
+updatedWonConversionKPI<- reactive({
+  
+  kpi_data<-funnel_data %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+      TRUE~'WrongAnswer'
+      )) %>% 
+    filter(funnel_date>=input$FunnelTimeRange[1],
+           funnel_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) 
+  
+  shiny::validate(
+    shiny::need("won" %in% colnames(kpi_data), 
+         "Won conversion can't be calculated")
+  )
+
+  return(round((kpi_data$won/kpi_data$leads)*100,1))
+    
+}
+)
+
+getUpdatedCPV<- reactive({
+  
+  cost_data<-funnel_data %>% 
+    filter(measure %in% c('marketing spend', 'web_traffic')) %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+                 TRUE~'WrongAnswer'),
+      report_date=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_date,
+        TRUE~funnel_date),
+      report_week=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_week,
+        TRUE~funnel_week),
+      report_month=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_month,
+        TRUE~funnel_month),
+      report_quarter=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+        TRUE~funnel_quarter),
+      report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+      report_mtd=as.integer(lubridate::mday(report_date)),
+      report_qtd=as.integer(lubridate::qday(report_date)),
+      date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+        input$FunnelTimeDimension=='Month'~report_mtd,
+        input$FunnelTimeDimension=='Quarter'~report_qtd)
+      ) %>%
+    filter(report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) %>% 
+    janitor::clean_names()
+
+    shiny::validate(
+    shiny::need("marketing_spend" %in% colnames(cost_data), 
+         "There was no spend in this time range")
+  )
+
+  shiny::validate(
+    shiny::need("web_traffic" %in% colnames(cost_data), 
+         "There are no visits in this time range")
+  )
+
+  
+  return(scales::dollar(cost_data$marketing_spend/cost_data$web_traffic))
+
+}
+)
+
+getUpdatedCPL<- reactive({
+  
+  cost_data<-funnel_data %>% 
+    filter(measure %in% c('marketing spend', 'leads')) %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+                 TRUE~'WrongAnswer'),
+      report_date=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_date,
+        TRUE~funnel_date),
+      report_week=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_week,
+        TRUE~funnel_week),
+      report_month=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_month,
+        TRUE~funnel_month),
+      report_quarter=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+        TRUE~funnel_quarter),
+      report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+      report_mtd=as.integer(lubridate::mday(report_date)),
+      report_qtd=as.integer(lubridate::qday(report_date)),
+      date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+        input$FunnelTimeDimension=='Month'~report_mtd,
+        input$FunnelTimeDimension=='Quarter'~report_qtd)
+      ) %>%
+    filter(report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) %>% 
+    janitor::clean_names()
+
+    shiny::validate(
+    shiny::need("marketing_spend" %in% colnames(cost_data), 
+         "There was no spend in this time range")
+  )
+
+  shiny::validate(
+    shiny::need("leads" %in% colnames(cost_data), 
+         "There are no leads in this time range")
+  )
+
+  
+  return(scales::dollar(cost_data$marketing_spend/cost_data$leads))
+
+}
+)
+
+getUpdatedCPT<- reactive({
+  
+  cost_data<-funnel_data %>% 
+    filter(measure %in% c('marketing spend', 'tour_scheduled')) %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+                 TRUE~'WrongAnswer'),
+      report_date=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_date,
+        TRUE~funnel_date),
+      report_week=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_week,
+        TRUE~funnel_week),
+      report_month=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_month,
+        TRUE~funnel_month),
+      report_quarter=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+        TRUE~funnel_quarter),
+      report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+      report_mtd=as.integer(lubridate::mday(report_date)),
+      report_qtd=as.integer(lubridate::qday(report_date)),
+      date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+        input$FunnelTimeDimension=='Month'~report_mtd,
+        input$FunnelTimeDimension=='Quarter'~report_qtd)
+      ) %>%
+    filter(report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) %>% 
+    janitor::clean_names()
+
+    shiny::validate(
+    shiny::need("marketing_spend" %in% colnames(cost_data), 
+         "There was no spend in this time range")
+  )
+
+  shiny::validate(
+    shiny::need("tour_scheduled" %in% colnames(cost_data), 
+         "There are no tours in this time range")
+  )
+
+  
+  return(scales::dollar(cost_data$marketing_spend/cost_data$tour_scheduled))
+
+}
+)
+
+getUpdatedCPC<- reactive({
+  
+  cost_data<-funnel_data %>% 
+    filter(measure %in% c('marketing spend', 'won')) %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+                 TRUE~'WrongAnswer'),
+      report_date=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_date,
+        TRUE~funnel_date),
+      report_week=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_week,
+        TRUE~funnel_week),
+      report_month=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_month,
+        TRUE~funnel_month),
+      report_quarter=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+        TRUE~funnel_quarter),
+      report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+      report_mtd=as.integer(lubridate::mday(report_date)),
+      report_qtd=as.integer(lubridate::qday(report_date)),
+      date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+        input$FunnelTimeDimension=='Month'~report_mtd,
+        input$FunnelTimeDimension=='Quarter'~report_qtd)
+      ) %>%
+    filter(report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) %>% 
+    janitor::clean_names()
+
+    shiny::validate(
+    shiny::need("marketing_spend" %in% colnames(cost_data), 
+         "There was no spend in this time range")
+  )
+
+  shiny::validate(
+    shiny::need("won" %in% colnames(cost_data), 
+         "There are no closed deals in this time range")
+  )
+
+  
+  return(scales::dollar(cost_data$marketing_spend/cost_data$won))
+
+}
+)
+
+getUpdatedROAS<- reactive({
+  
+  cost_data<-funnel_data %>% 
+    filter(measure %in% c('marketing spend', 'deal_revenue')) %>% 
+    mutate(hana_product_eval=case_when(
+      input$FunnelSourceAttribution=='Explicit'~hana_product_orig,
+      input$FunnelSourceAttribution=='Blended'~hana_product,
+                 TRUE~'WrongAnswer'),
+      report_date=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_date,
+        TRUE~funnel_date),
+      report_week=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_week,
+        TRUE~funnel_week),
+      report_month=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_month,
+        TRUE~funnel_month),
+      report_quarter=case_when(
+        input$FunnelGroupingDimension=='Cohort'~cohort_quarter,
+        TRUE~funnel_quarter),
+      report_wtd=as.integer(lubridate::wday(report_date,week_start = 1)),
+      report_mtd=as.integer(lubridate::mday(report_date)),
+      report_qtd=as.integer(lubridate::qday(report_date)),
+      date_length=case_when(
+        input$FunnelTimeDimension=='Week'~report_wtd,
+        input$FunnelTimeDimension=='Month'~report_mtd,
+        input$FunnelTimeDimension=='Quarter'~report_qtd)
+      ) %>%
+    filter(report_date>=input$FunnelTimeRange[1],
+           report_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product_eval,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product_eval),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    group_by(measure) %>% 
+    summarise(values=sum(value)) %>% 
+  pivot_wider(names_from = measure,
+                values_from = values,
+                values_fill=list(values=0)) %>% 
+    janitor::clean_names()
+
+    shiny::validate(
+    shiny::need("marketing_spend" %in% colnames(cost_data), 
+         "There was no spend in this time range")
+  )
+
+  shiny::validate(
+    shiny::need("deal_revenue" %in% colnames(cost_data), 
+         "There are no closed deals in this time range")
+  )
+
+  return(scales::dollar(cost_data$deal_revenue/cost_data$marketing_spend))
+
+}
+)
+
+
+isr_summary_data<-reactive({
+  updatedISR<-isr_activity_summary_edited %>% 
+    filter(first_task_create_date>=input$FunnelTimeRange[1],
+           first_task_create_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) 
+  
+  return(updatedISR)
+})
+
+
+getUpdatedISREngagements<- reactive({
+  updatedISR<-isr_activity_detail_edited %>% 
+    filter(engagement_date>=input$FunnelTimeRange[1],
+           engagement_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    summarise(engagements=sum(engagements))
+  
+  return(updatedISR)
+    
+})
+
+
+getUpdatedISROpptyConversion<- reactive({
+  updatedISR<-isr_activity_summary_edited %>% 
+    filter(first_task_create_date>=input$FunnelTimeRange[1],
+           first_task_create_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    summarise(customers=n_distinct(contact_id),
+              converters=length(contact_id[isr_review %in% c('Contacted, Tour Booked','Contacted, Closed Won')]),
+              conversion=scales::percent(converters/customers),
+              time_to_contact=round(mean(time_to_first_engagement,na.rm=TRUE),1),
+              open_tasks=sum(num_tasks)-sum(completed_tasks))
+  
+  return(updatedISR)
+    
+})
+
+updatedISRTrend <- reactive({
+  
+
+  trend_data <-isr_activity_detail_edited %>% 
+    filter(engagement_date>=input$FunnelTimeRange[1],
+           engagement_date<=input$FunnelTimeRange[2],
+#           grepl(input$FunnelProduct,hana_product,ignore.case = TRUE),
+            grepl(paste0(input$FunnelProduct,collapse="|"),hana_product),
+            grepl(paste0(input$FunnelCity,collapse="|"),hana_city)) %>% 
+    mutate(timespan=case_when(
+           input$FunnelTimeDimension=='Week'~lubridate::floor_date(engagement_date,unit="week",week_start=1),
+           input$FunnelTimeDimension=='Month'~lubridate::floor_date(engagement_date,unit="month"),
+           input$FunnelTimeDimension=='Quarter'~lubridate::floor_date(engagement_date,unit="quarter"))) %>% 
+    group_by(timespan,engagement_type) %>% 
+    summarise(engagements=sum(engagements))
+
+  return(trend_data)
+})
+
+
+observeEvent(input$helpBtn, {
+#  show_alert(session, title = "Release Notes", text = paste0(readLines("inc/release_notes.md"),collapse="<br>"),html=TRUE)})
+#    show_alert(title = "Release Notes", text = tags$body(paste0(readLines("inc/release_notes.md"),collapse='tags$br()'),html=TRUE))})
+ showModal(modalDialog(
+        title = "Release Notes",
+        HTML(paste0(readLines("inc/release_notes.md"),collapse='<br>'))
+ ))
+})
+```
+
+Sidebar {.sidebar }
+=====================================
+###### **Data Updated:** _`r file.info('inc/funnel_data.RData')$mtime` ._
+
+```{r}
+
+  actionLink("helpBtn", "Notes")
+
+
+dateRangeInput('FunnelTimeRange',
+      label = 'Choose the time range',
+      min=RiHana::get_relevant_date()$yoy_date,
+      max=RiHana::get_relevant_date()$yesterdays_date,
+      start = RiHana::get_relevant_date()$yoy_date, 
+      end = RiHana::get_relevant_date()$yesterdays_date,
+      weekstart = 1
+    )
+
+
+selectizeInput(
+        'FunnelProduct', 'Choose a product', choices = unique(funnel_data$hana_product),
+        options = list(
+          placeholder = 'Please select an option below',
+          onInitialize = I('function() { this.setValue("*"); }')
+        ),
+        multiple=TRUE
+)
+
+selectizeInput(
+        'FunnelCity', 'Choose a City', choices = na.omit(unique(funnel_data$hana_city)),
+        options = list(
+          placeholder = 'Please select an option below',
+          onInitialize = I('function() { this.setValue("*"); }')
+        ),
+        multiple=TRUE
+)
+
+radioButtons("FunnelGroupingDimension",label="Pick how you want event dates to be related",
+             choices=c("Cohort","Event"),
+             inline=TRUE,
+             selected="Cohort")
+helpText("Note: Cohort means all events are tied to the Lead Creation date, Event means events use the actual event date")
+
+
+radioButtons("FunnelTimeDimension",label="Pick the time interval",
+             choices=c("Week","Month","Quarter"),
+             selected="Month")
+helpText("Note: Time interval specifies the X axis where appicable for trending data")
+
+radioButtons("FunnelTimeComplete",label="Include in time range",
+             choices=c("Full Range"="Y",
+                       "To Date" = "N"),
+             inline=TRUE)
+helpText("Note: To Date will calculate all previous time dimensions to the same days complete as the current")
+
+
+radioButtons("FunnelSourceAttribution",label="Choose Product attribution method",
+             choices=c("Explicit","Blended"),
+             inline=TRUE,
+             selected="Blended")
+helpText("Explicit link between product and metric vs. split for unknown product")
+
+#these values are inverted because we are going to use the value to exclude
+radioButtons("FunnelTours",label="View tours by date:",
+             choices=c("Scheduled"="created",
+                       "Created" = "scheduled"),
+             inline=TRUE,
+             selected = "created")
+
+
+```
+
+<strong>Marketing Spend</strong> - Dollars spent on major ad platforms (Google, Bing, Facebook, LinkedIn)
+
+<strong>Web Traffic</strong> - Sessions as recorded in Google Analytics
+
+<strong>Leads</strong> - Contacts created in Hubspot
+
+<strong>Opportunities</strong> - Deals created in Hubspot
+
+<strong>Tours</strong> - Hubspot meeting engagement where type = "Tour Scheduled"
+
+<strong>Won</strong> - Hubspot deals where pipeline stage is "Closed Won"
+
+Funnel Conversion {data-orientation=rows}
+===================================== 
+
+Row {data-height=100}
+-------------------------------------
+
+### Cost/Visitor
+
+```{r}
+renderValueBox({
+updatedCPV <- getUpdatedCPV()
+valueBox(prettyNum(updatedCPV,big.mark = ","), 
+         icon = "fa-file-invoice-dollar",
+         color = "#D2DEE0")
+})
+```
+
+### Cost/Lead
+
+```{r}
+renderValueBox({
+updatedCPL <- getUpdatedCPL()
+valueBox(prettyNum(updatedCPL,big.mark = ","), 
+         icon = "fa-file-invoice-dollar",
+         color = "#D2DEE0")
+})
+```
+
+### Cost/Tour
+
+```{r}
+renderValueBox({
+updatedCPT <- getUpdatedCPT()
+valueBox(prettyNum(updatedCPT,big.mark = ","), 
+         icon = "fa-file-invoice-dollar",
+         color = "#D2DEE0")
+})
+```
+
+### Cost/Customer
+
+```{r}
+renderValueBox({
+updatedCPC <- getUpdatedCPC()
+valueBox(prettyNum(updatedCPC,big.mark = ","), 
+         icon = "fa-file-invoice-dollar",
+         color = "#D2DEE0")
+})
+```
+
+### ROAS
+
+```{r}
+renderValueBox({
+updatedROAS <- getUpdatedROAS()
+valueBox(prettyNum(updatedROAS,big.mark = ","), 
+         icon = "fa-file-invoice-dollar",
+         color = "#D2DEE0")
+})
+```
+
+
+
+
+Row {data-height=650}
+-------------------------------------
+
+### Funnel
+
+```{r}
+
+renderPlotly(
+ {
+   funnel_viz_data<-updatedFunnelViz()
+   fig <- plot_ly() 
+   fig <- fig %>%
+   add_trace(type = "funnel",
+            y = funnel_viz_data$stage,
+            x = funnel_viz_data$percent,
+            text=funnel_viz_data$plot_label,
+            textposition = "inside",
+            textinfo = "text",
+            opacity = 0.65,
+            marker = list(color = RiHana::hana_color_palette(n_distinct(funnel_viz_data$stage),1))) 
+  
+fig <- fig %>%
+  layout(yaxis = list(categoryarray = funnel_viz_data$stage)) %>% 
+  style(hoverinfo = 'none')
+
+fig
+
+    }
+)
+
+```
+
+Row
+-------------------------------------
+### Visit to Lead
+
+```{r}
+
+renderGauge({
+  VisitKPI<-updatedVisitConversionKPI()
+gauge(VisitKPI, min = 0, max = 10, symbol = '%', gaugeSectors(
+  success = c(5, 15), warning = c(2, 4), danger = c(0,2)
+))
+})
+```
+
+### Lead to Tour
+
+```{r}
+renderGauge({
+  TourConversion<-updatedTourConversionKPI()
+gauge(TourConversion, min = 0, max = 100, symbol = '%', gaugeSectors(
+  success = c(30, 100), warning = c(15, 30), danger = c(0,15)
+))
+})
+```
+
+
+### Lead to Closed Won
+
+```{r}
+renderGauge({
+  WonConversion<-updatedWonConversionKPI()
+gauge(WonConversion, min = 0, max = 25, symbol = '%', gaugeSectors(
+  success = c(15, 25), warning = c(5, 15), danger = c(0,5)
+))
+})
+```
+
+
+Trends {data-orientation=rows}
+===================================== 
+
+Row {data-height=550}
+-------------------------------------
+### Trend Line
+
+```{r}
+sidebarPanel(
+selectInput("FunnelMeasure", label = "Choose a metric",
+            choices = c("Marketing Spend"="marketing_spend",
+                        "Web Traffic"="web_traffic",
+                        "Leads"="leads",
+                        "Opportunities"="opptys",
+                        "Tours"="tour_scheduled",
+                        "Won"="won",
+                        "Revenue"="deal_revenue",
+                        "Visit Conversion"="visit_conversion",
+                        "Lead/Oppty Conv"="lead_to_oppty_conversion",
+                        "Lead/Won Conv"="lead_to_won_conversion"), 
+            selected = c("web_traffic"),
+            multiple = FALSE),
+width=2
+)
+```
+
+
+```{r}
+
+renderPlotly({
+
+    trend_dat<-updatedFunnelTable() %>% 
+    rename(measure=!!rlang::sym(input$FunnelMeasure))
+updatedFunnelTable
+    plot_ly(trend_dat,
+        marker = list(color = "#002636"),
+        y = ~measure,
+        x= ~timespan,
+        type="bar") %>% 
+     layout(xaxis=list(range = c(min(trend_dat$timespan),
+                                 max(trend_dat$timespan))))
+
+  })
+```
+
+Row 
+-------------------------------------
+### Table
+```{r}
+renderDataTable({
+datatable(updatedFunnelTable() ,escape = FALSE,rownames = FALSE, extensions = c('Scroller', 'Buttons'), 
+          options = c(list(scrollY = 200, scroller = TRUE),list(dom = 'tB',buttons = c('csv'))),fillContainer = T) %>% 
+    formatCurrency(c('marketing_spend','deal_revenue'),digits=0) %>% 
+    formatPercentage(c('visit_conversion','lead_to_oppty_conversion','lead_to_won_conversion'),1)
+})
+```
+
+ISR Activity {data-orientation=rows}
+===================================== 
+
+Row {data-height=100}
+-------------------------------------
+
+### Assigned Contacts
+
+```{r}
+renderValueBox({
+updatedISR <- getUpdatedISROpptyConversion()
+valueBox(prettyNum(updatedISR$customers,big.mark = ","), 
+         icon = "fa-address-card",
+         color = "#D2DEE0")
+})
+```
+
+### Open Tasks
+
+```{r}
+renderValueBox({
+updatedISR <- getUpdatedISROpptyConversion()
+valueBox(prettyNum(updatedISR$open_tasks,big.mark = ","), 
+         icon = "fa-tasks",
+         color = "#D2DEE0")
+})
+```
+
+
+### Count of Engagement Activity
+
+```{r}
+renderValueBox({
+updatedISR <- getUpdatedISREngagements()
+valueBox(prettyNum(updatedISR$engagements,big.mark = ","), 
+         icon = "fa-phone-volume",
+         color = "#D2DEE0")
+})
+```
+
+### Customer/Opportunity
+
+```{r}
+renderValueBox({
+updatedISR <- getUpdatedISROpptyConversion()
+valueBox(prettyNum(updatedISR$conversion,big.mark = ","), 
+         icon = "fa-percent",
+         color = "#D2DEE0")
+})
+```
+
+### Avg Time to Contact (hours)
+
+```{r}
+renderValueBox({
+updatedISR <- getUpdatedISROpptyConversion()
+valueBox(prettyNum(updatedISR$time_to_contact,big.mark = ","), 
+         icon = "fa-clock",
+         color = "#D2DEE0")
+})
+```
+
+
+
+Row {data-height=350}
+-------------------------------------
+
+### Engagement over time
+
+```{r}
+
+renderPlotly({
+  trend_dat<-updatedISRTrend()
+
+    plot_ly(trend_dat,
+        y = ~engagements,
+        x= ~timespan,
+        color = ~engagement_type,
+          colors=hana_color_palette(n_distinct(trend_dat$engagement_type),2),
+          type="bar")%>%
+      layout(barmode = "stack",
+           bargap=0.1,
+           legend = list(orientation = 'h'),
+           xaxis=list(range = c(min(trend_dat$timespan),
+                                 max(trend_dat$timespan))))
+
+
+  })
+
+```
+
+Row {data-height=350}
+-------------------------------------
+
+### Time to First Task
+
+```{r}
+
+ renderPlotly({
+   isr_tasks<-isr_summary_data()
+
+
+isr_tasks %>% 
+plot_ly(y = ~time_to_first_completed_task, 
+        color = ~isr_review, 
+        colors=hana_color_palette(n_distinct(isr_tasks$isr_review)),
+        type = "box") %>% 
+  layout(showlegend = FALSE)
+
+ }
+ )
+
+```
+
+### ISR Resolution
+
+```{r}
+
+ renderPlotly({
+   isr_resolution<-isr_summary_data()
+
+
+isr_resolution %>% 
+  plot_ly(marker = list(color = "#002636"),
+          orientation='h',
+          y = ~isr_review,
+#          bargroupgap=0.1,
+#          bargap = 0.15,
+          type="histogram")%>%
+    highlight('plotly_click',color='red')
+
+ }
+ )
+
+```
+
+
